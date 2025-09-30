@@ -1,0 +1,12 @@
+{
+  "name": "rideshare-app",
+  "version": "1.0.0",
+  "description": "Serverless ridesharing application on AWS",
+  "scripts": {
+    "test": "echo 'Run tests'",
+    "deploy:infra": "cd backend/infrastructure/terraform && terraform apply",
+    "cost-check": "python3 scripts/cost-monitor.py"
+  },
+  "keywords": ["serverless", "aws", "rideshare"],
+  "license": "MIT"
+}
