@@ -1,0 +1,47 @@
+
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "properties": {
+        "metrics": [
+          [ "AWS/Lambda", "Invocations", "FunctionName", "rideshare-user-service-prod" ],
+          [ "AWS/Lambda", "Duration", "FunctionName", "rideshare-user-service-prod" ],
+          [ "AWS/Lambda", "Errors", "FunctionName", "rideshare-user-service-prod" ]
+        ],
+        "period": 300,
+        "stat": "Sum",
+        "region": "us-east-1",
+        "title": "User Service Metrics"
+      }
+    },
+    {
+      "type": "metric", 
+      "properties": {
+        "metrics": [
+          [ "AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "rideshare-users-prod" ],
+          [ "AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "rideshare-users-prod" ]
+        ],
+        "period": 300,
+        "stat": "Sum",
+        "region": "us-east-1", 
+        "title": "DynamoDB Usage"
+      }
+    },
+    {
+      "type": "metric",
+      "properties": {
+        "metrics": [
+          [ "AWS/ApiGateway", "Count", "ApiName", "rideshare-api-prod" ],
+          [ "AWS/ApiGateway", "Latency", "ApiName", "rideshare-api-prod" ],
+          [ "AWS/ApiGateway", "4XXError", "ApiName", "rideshare-api-prod" ],
+          [ "AWS/ApiGateway", "5XXError", "ApiName", "rideshare-api-prod" ]
+        ],
+        "period": 300,
+        "stat": "Sum",
+        "region": "us-east-1",
+        "title": "API Gateway Metrics"
+      }
+    }
+  ]
+}

@@ -1,0 +1,243 @@
+# .github/workflows/backend-deploy.yml
+name: Deploy Backend Services
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-deploy.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+
+env:
+  AWS_REGION: us-east-1
+  NODE_VERSION: '18'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          npm ci
+
+      - name: Run unit tests
+        run: |
+          cd backend
+          npm test
+
+      - name: Run security audit
+        run: |
+          cd backend
+          npm audit --audit-level moderate
+
+  deploy-infrastructure:
+    needs: test
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: GitHubActions-Backend
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Terraform Init
+        run: |
+          cd backend/infrastructure/terraform
+          terraform init
+
+      - name: Terraform Plan
+        run: |
+          cd backend/infrastructure/terraform
+          terraform plan -var="environment=${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}"
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+        run: |
+          cd backend/infrastructure/terraform
+          terraform apply -auto-approve -var="environment=${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}"
+
+      - name: Export Terraform Outputs
+        id: terraform-outputs
+        run: |
+          cd backend/infrastructure/terraform
+          echo "api_gateway_url=$(terraform output -raw api_gateway_url)" >> $GITHUB_OUTPUT
+          echo "user_pool_id=$(terraform output -raw user_pool_id)" >> $GITHUB_OUTPUT
+          echo "user_pool_client_id=$(terraform output -raw user_pool_client_id)" >> $GITHUB_OUTPUT
+
+    outputs:
+      api_gateway_url: ${{ steps.terraform-outputs.outputs.api_gateway_url }}
+      user_pool_id: ${{ steps.terraform-outputs.outputs.user_pool_id }}
+      user_pool_client_id: ${{ steps.terraform-outputs.outputs.user_pool_client_id }}
+
+  deploy-lambdas:
+    needs: [test, deploy-infrastructure]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    strategy:
+      matrix:
+        service: [user-service, driver-service, ride-service, payment-service, notification-service, location-service]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: GitHubActions-Lambda-${{ matrix.service }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build Lambda Layer (shared utilities)
+        if: matrix.service == 'user-service'  # Build layer once
+        run: |
+          cd backend/shared/layers/common
+          npm ci --production
+          mkdir -p /tmp/layer/nodejs
+          cp -r . /tmp/layer/nodejs/
+          cd /tmp/layer
+          zip -r common-layer.zip .
+
+      - name: Deploy Lambda Layer
+        if: matrix.service == 'user-service'
+        run: |
+          aws lambda publish-layer-version \
+            --layer-name rideshare-common-layer-${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }} \
+            --zip-file fileb:///tmp/layer/common-layer.zip \
+            --compatible-runtimes nodejs18.x \
+            --description "Common utilities for rideshare application"
+
+      - name: Build service package
+        run: |
+          cd backend/services/${{ matrix.service }}
+          npm ci --production
+          zip -r ${{ matrix.service }}.zip . -x "*.git*" "node_modules/aws-sdk/*" "tests/*"
+
+      - name: Deploy Lambda function
+        run: |
+          cd backend/services/${{ matrix.service }}
+          
+          # Get the layer ARN (created in previous step or existing)
+          LAYER_ARN=$(aws lambda list-layers --query "Layers[?LayerName=='rideshare-common-layer-${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}'].LatestMatchingVersion.LayerVersionArn" --output text)
+          
+          # Update function code
+          aws lambda update-function-code \
+            --function-name rideshare-${{ matrix.service }}-${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }} \
+            --zip-file fileb://${{ matrix.service }}.zip
+          
+          # Update function configuration with layer
+          aws lambda update-function-configuration \
+            --function-name rideshare-${{ matrix.service }}-${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }} \
+            --layers $LAYER_ARN
+
+  integration-tests:
+    needs: [deploy-lambdas]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: GitHubActions-Integration-Tests
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run integration tests
+        env:
+          API_GATEWAY_URL: ${{ needs.deploy-infrastructure.outputs.api_gateway_url }}
+          USER_POOL_ID: ${{ needs.deploy-infrastructure.outputs.user_pool_id }}
+          USER_POOL_CLIENT_ID: ${{ needs.deploy-infrastructure.outputs.user_pool_client_id }}
+        run: |
+          cd backend
+          npm run test:integration
+
+  cost-monitoring:
+    needs: [deploy-lambdas]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: GitHubActions-Cost-Check
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check current month costs
+        run: |
+          # Get current month costs
+          CURRENT_COST=$(aws ce get-cost-and-usage \
+            --time-period Start=$(date -d "$(date +%Y-%m-01)" +%Y-%m-%d),End=$(date +%Y-%m-%d) \
+            --granularity MONTHLY \
+            --metrics BlendedCost \
+            --query 'ResultsByTime[0].Total.BlendedCost.Amount' \
+            --output text)
+          
+          echo "Current month cost: $CURRENT_COST"
+          
+          # Alert if cost exceeds $20 (our $15 budget + buffer)
+          if (( $(echo "$CURRENT_COST > 20" | bc -l) )); then
+            echo "::warning::Cost alert: Current monthly cost ($CURRENT_COST) exceeds budget!"
+            
+            # Send SNS notification
+            aws sns publish \
+              --topic-arn ${{ secrets.COST_ALERT_TOPIC_ARN }} \
+              --message "Rideshare app monthly cost ($CURRENT_COST) exceeds budget threshold!"
+          fi
