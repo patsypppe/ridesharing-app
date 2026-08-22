@@ -1,96 +1,217 @@
-[![Deploy Status](https://github.com/yourusername/rideshare-app/workflows/Deploy/badge.svg)](https://github.com/yourusername/rideshare-app/actions)
-[![Cost](https://img.shields.io/badge/Monthly%20Cost-$1.50-green.svg)](docs/deployment/cost-monitoring.md)
-[![AWS Free Tier](https://img.shields.io/badge/AWS-Free%20Tier%20Optimized-orange.svg)](https://aws.amazon.com/free/)
+# Serverless Ride-Sharing Backend
 
-## 🎯 Project Highlights for Recruiters
+**A ride-sharing backend built as six Lambda-backed services behind AWS managed infrastructure, with
+the environment declared in Terraform.**
 
-- **100% Serverless Architecture** using AWS Lambda, API Gateway, DynamoDB
-- **Cost-Optimized**: $1.50/month within AWS Free Tier
-- **Production-Ready**: CI/CD, monitoring, security best practices
-- **Real-time Features**: WebSocket API for live location tracking
-- **Modern Tech Stack**: React PWA, Node.js microservices, Terraform IaC
-- **Interview-Ready**: Complete documentation and demo scenarios
+Ride hailing is the textbook always-on backend, which normally means paying for servers that sit idle
+between requests. This is the same system built so that nothing runs between rides: HTTP API Gateway in
+front of Lambda, DynamoDB on-demand for state, a separate WebSocket API for live location, and Cognito
+for auth.
 
-## 🏗️ Architecture
-
-![Architecture Diagram](docs/architecture/system-design.png)
-
-### Services
-- **User Service**: Authentication, profile management
-- **Driver Service**: Driver registration, availability tracking
-- **Ride Service**: Ride matching, status updates
-- **Payment Service**: Fare calculation, payment processing (test mode)
-- **Notification Service**: Email/SMS notifications
-- **Location Service**: Real-time location tracking with geohashing
-1. **Prerequisites**
-aws configure
-npm install -g @aws-cdk/cli
-
-text
-
-2. **Deploy Infrastructure**
-cd backend/infrastructure/terraform
-terraform init && terraform apply
-
-text
-
-3. **Deploy Services**
-cd ../../scripts/deployment
-./deploy-backend.sh
-./deploy-frontend.sh
-
-text
-
-4. **Access Application**
-- Web App: `https://your-cloudfront-domain.cloudfront.net`
-- Admin Dashboard: `https://your-cloudfront-domain.cloudfront.net/admin`
-
-## 📊 Cost Monitoring
-
-- **Current Month**: Check `scripts/monitoring/cost-check.py`
-- **Alerts**: CloudWatch budgets set at $5, $10, $15
-- **Optimization**: Detailed breakdown in [Cost Guide](docs/deployment/cost-monitoring.md)
-
-## 🎤 Interview Talking Points
-
-- **Serverless Benefits**: Cost efficiency, auto-scaling, no server management
-- **Microservices Design**: Loose coupling, independent deployment, fault isolation
-- **Real-time Architecture**: WebSocket connections, event-driven communication
-- **Cost Optimization**: Free tier maximization, on-demand billing strategies
-- **Security**: Cognito authentication, IAM least privilege, API rate limiting
-
-## 📚 Documentation
-
-- [System Architecture](docs/architecture/system-design.md)
-- [Deployment Guide](docs/deployment/setup-guide.md)
-- [API Documentation](docs/api/)
-- [Interview Preparation](docs/interview-prep/)
-
-## 🔧 Tech Stack
-
-**Backend**: Node.js, AWS Lambda, DynamoDB, API Gateway, EventBridge
-**Frontend**: React, PWA, Leaflet.js, WebSocket
-**Infrastructure**: Terraform, AWS SAM, GitHub Actions
-**Monitoring**: CloudWatch, AWS Budgets, Custom metrics
-
-## 📈 What I Learned
-
-- Serverless architecture patterns and best practices
-- AWS cost optimization strategies
-- Real-time communication with WebSockets
-- Infrastructure as Code with Terraform
-- Progressive Web App development
-- Microservices decomposition and event-driven design
-
-## 🔮 Future Enhancements
-
-- Machine learning for demand prediction
-- Advanced route optimization algorithms
-- Multi-region deployment for global scaling
-- Enhanced security with AWS WAF
-- Mobile apps with React Native
+> **Status: architecture and service-layer study, not a deployed product.** The service handlers, the
+> shared Lambda layer, the tests, and the CI workflow are written and readable. The Terraform stack is
+> incomplete: it provisions the data and edge layer but does not yet declare the Lambda functions, the
+> API routes, or the IAM roles, so the system does not currently deploy end to end. The exact gaps are
+> listed under [Current limitations](#current-limitations). There is no live demo.
 
 ---
 
-**Live Demo**: [https://your-domain.com](https://your-domain.com)
-**Demo Credentials**: Available in [Demo Guide](docs/interview-prep/demo-script.md)
+## Who this is for
+
+Anyone reading the repository to see how a serverless backend is decomposed: where the service
+boundaries fall, what goes in a shared layer, how a WebSocket API sits alongside a request/response API,
+and what the infrastructure looks like as code rather than as console screenshots.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    PWA["React web app<br/>Amplify · Leaflet · Zustand"]
+    PWA --> CF["CloudFront + S3<br/>static hosting"]
+    PWA --> HTTP["API Gateway<br/>HTTP API"]
+    PWA <--> WS["API Gateway<br/>WebSocket API"]
+
+    HTTP --> USER["user-service"]
+    HTTP --> DRIVER["driver-service"]
+    HTTP --> RIDE["ride-service"]
+    HTTP --> PAY["payment-service"]
+    WS --> SOCK["websocket-service"]
+
+    USER --> LAYER["shared Lambda layer<br/>auth · responses · DynamoDB client"]
+    DRIVER --> LAYER
+    RIDE --> LAYER
+    PAY --> LAYER
+    SOCK --> LAYER
+
+    LAYER --> DDB[("DynamoDB<br/>users · drivers · rides")]
+    USER --> COG["Cognito user pool"]
+    PAY --> STRIPE["Stripe (test mode)"]
+    RIDE --> EB["EventBridge bus"]
+    EB --> NOTIF["notification-service"]
+    NOTIF --> SNS["SNS"]
+```
+
+Every function writes to a CloudWatch log group with 7 day retention, omitted from the diagram because
+it connects to everything.
+
+### Services
+
+| Service | Lines | Responsibility |
+|---|---:|---|
+| `user-service` | 188 | Registration, profile, token validation |
+| `driver-service` | 292 | Driver registration and availability |
+| `ride-service` | 358 | Ride matching and status transitions |
+| `payment-service` | 367 | Fare calculation and Stripe charges (test mode) |
+| `notification-service` | 425 | Event-driven email and SMS via SNS |
+| `websocket-service` | 264 | Connection lifecycle and live location broadcast |
+
+All six share `backend/shared/layers/common/utils.js`, which provides the response envelope, JWT
+validation, and a DynamoDB DocumentClient configured with three retries and a 5 second timeout, plus SNS
+and EventBridge clients.
+
+---
+
+## Engineering decisions
+
+**HTTP API rather than REST API.** API Gateway's HTTP API is roughly 70% cheaper per million requests
+than the REST API at AWS list pricing, and this workload needs none of the REST-only features (request
+validation happens in the handlers with Joi, and there are no usage plans or API keys). This is a
+pricing-model choice, not a measured saving on this project.
+
+**On-demand DynamoDB, no provisioned capacity.** A portfolio-scale workload has no steady traffic to
+provision for, and on-demand costs nothing when idle. Access patterns drove the GSIs rather than the
+other way around.
+
+**A separate WebSocket API instead of polling.** Live driver location is a push problem. Polling a REST
+endpoint every few seconds would dominate the request count and therefore the bill.
+
+**A shared Lambda layer instead of duplicating helpers.** Auth and the response envelope must behave
+identically in all six services, and copies drift.
+
+**EventBridge between ride and notification.** Notifications should not be on the critical path of a
+ride status change. The ride service emits an event and returns.
+
+**CloudWatch log retention set to 7 days.** Logs are the quiet cost line in serverless. Retention is set
+deliberately rather than left at "never expire".
+
+---
+
+## Technology stack
+
+**Backend** Node.js, AWS Lambda, DynamoDB, API Gateway v2 (HTTP and WebSocket), Cognito, EventBridge,
+SNS, CloudWatch Logs, Stripe (test mode), Joi, jsonwebtoken
+
+**Frontend** React 18, AWS Amplify, Leaflet, Zustand, Workbox
+
+**Infrastructure** Terraform, S3, CloudFront
+
+**CI** GitHub Actions with OIDC role assumption (no long-lived AWS keys)
+
+**Testing** Jest with `aws-sdk-mock`, Playwright, boto3 for the cost monitor
+
+---
+
+## Repository layout
+
+```
+backend/
+  services/<name>-service/handler.js   six Lambda handlers
+  services/user-service/tests/         Jest unit + integration tests
+  shared/layers/common/                shared Lambda layer
+  shared/middleware/authMiddleware.js
+  infrastructure/terraform/            main.tf, variables.tf, outputs.tf
+  infrastructure/monitoring/           CloudWatch dashboard definition
+  infrastructure/scripts/cost-monitor.py
+frontend/web-app/                      React client
+.github/workflows/backend-deploy.yml   test → infra → lambdas → integration → cost
+```
+
+---
+
+## Local setup
+
+```bash
+git clone https://github.com/patsypppe/ridesharing-app.git
+cd ridesharing-app
+cp .env.example .env
+```
+
+Inspect the infrastructure without applying it. This needs Terraform and AWS credentials configured, and
+it creates nothing:
+
+```bash
+cd backend/infrastructure/terraform
+terraform init
+terraform validate
+terraform plan
+```
+
+Run the cost monitor against your own account (read-only, requires Cost Explorer permissions):
+
+```bash
+pip install boto3
+python backend/infrastructure/scripts/cost-monitor.py
+```
+
+The frontend and the Node test suite are **not currently runnable from a clean clone**. See
+[Current limitations](#current-limitations).
+
+---
+
+## Environment variables
+
+Copy `.env.example` and fill it in. Nothing secret belongs in the repository.
+
+| Variable | Used by | Notes |
+|---|---|---|
+| `USERS_TABLE`, `DRIVERS_TABLE`, `RIDES_TABLE` | all services | DynamoDB table names |
+| `JWT_SECRET` | shared layer | token validation |
+| `STRIPE_SECRET_KEY` | payment-service | Stripe **test** key |
+| `SNS_TOPIC_ARN` | notification-service | |
+| `EVENT_BUS_NAME` | ride-service | |
+| `REACT_APP_AWS_REGION` | frontend | |
+| `REACT_APP_USER_POOL_ID`, `REACT_APP_USER_POOL_CLIENT_ID` | frontend | Cognito |
+| `REACT_APP_API_GATEWAY_URL`, `REACT_APP_WEBSOCKET_URL` | frontend | |
+
+CI additionally expects the repository secret `AWS_ROLE_ARN`, an IAM role trusted for GitHub OIDC.
+
+---
+
+## Current limitations
+
+These are real gaps, listed so nobody has to discover them by cloning.
+
+- **Terraform does not declare the compute layer.** The stack provisions S3, CloudFront, three DynamoDB
+  tables, Cognito, both API Gateway v2 APIs, an EventBridge bus, an SNS topic, and a CloudWatch log
+  group. It declares **no `aws_lambda_function`, no API routes or integrations, and no IAM roles**, so
+  the two APIs have no routes attached and the handlers are never deployed.
+- **`outputs.tf` is empty.** The CI workflow reads `api_gateway_url`, `user_pool_id`, and
+  `user_pool_client_id` from it, and gets nothing.
+- **`backend/package.json` is missing**, so `npm ci` and `npm test` fail from a clean clone even though
+  the Jest tests exist.
+- **The CI matrix is wrong.** It deploys a `location-service` that has no code and omits
+  `websocket-service`, which does.
+- **The frontend does not build.** `src/index.js` and `public/index.html` are absent, and `App.js`
+  imports seven components that do not exist. Only `RideBookingPage` is implemented.
+- **The system has never been deployed.** There is no live URL, no Terraform state, and no CI run to
+  point at. Any performance, uptime, or monthly-cost figure would be invented, so none is quoted here.
+
+---
+
+## Roadmap
+
+In dependency order, since each unblocks the next:
+
+1. Add `backend/package.json` so the existing tests can run.
+2. Populate `outputs.tf`.
+3. Add the Lambda functions, API routes and integrations, and IAM roles to Terraform.
+4. Fix the CI service matrix.
+5. Restore the frontend entry point and the missing pages.
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).

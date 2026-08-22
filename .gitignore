@@ -46,3 +46,13 @@ tmp/
 temp/
 .DS_Store
 Thumbs.db
+
+# Terraform variable files (may contain account IDs / secrets)
+*.tfvars
+!*.tfvars.example
+
+# Python (backend/infrastructure/scripts/cost-monitor.py)
+__pycache__/
+*.py[cod]
+venv/
+.venv/
