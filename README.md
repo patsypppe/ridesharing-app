@@ -133,8 +133,8 @@ frontend/web-app/                      React client
 ## Local setup
 
 ```bash
-git clone https://github.com/patsypppe/ridesharing-app.git
-cd ridesharing-app
+git clone https://github.com/patsypppe/serverless-rideshare-aws.git
+cd serverless-rideshare-aws
 cp .env.example .env
 ```
 
