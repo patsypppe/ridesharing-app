@@ -10,15 +10,29 @@ class WebSocketService {
     this.pingInterval = null;
   }
 
-  connect(userId, userType) {
+  // Browsers cannot set headers on the WebSocket handshake, so the Cognito ID
+  // token travels as a query parameter and the Lambda $connect handler
+  // verifies it. `getToken` is called on every (re)connect so a refreshed
+  // token is used after the previous one expires.
+  async connect({ userType, getToken }) {
     if (this.ws && this.isConnected) {
       console.log('WebSocket already connected');
-      return Promise.resolve();
+      return;
+    }
+
+    if (typeof getToken !== 'function') {
+      throw new Error('websocketService.connect requires a getToken function');
+    }
+
+    const token = await getToken();
+    if (!token) {
+      throw new Error('Not signed in: no ID token available for the WebSocket handshake');
     }
 
     return new Promise((resolve, reject) => {
-      const wsUrl = `${process.env.REACT_APP_WEBSOCKET_URL}?userId=${userId}&userType=${userType}`;
-      
+      const query = new URLSearchParams({ token, userType });
+      const wsUrl = `${process.env.REACT_APP_WEBSOCKET_URL}?${query.toString()}`;
+
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
@@ -44,7 +58,7 @@ class WebSocketService {
         this.stopPingInterval();
         
         if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
-          this.scheduleReconnect(userId, userType);
+          this.scheduleReconnect({ userType, getToken });
         }
       };
 
@@ -140,14 +154,14 @@ class WebSocketService {
   }
 
   // Schedule reconnection
-  scheduleReconnect(userId, userType) {
+  scheduleReconnect(options) {
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-    
+
     console.log(`Scheduling reconnect attempt ${this.reconnectAttempts} in ${delay}ms`);
-    
+
     setTimeout(() => {
-      this.connect(userId, userType).catch(error => {
+      this.connect(options).catch(error => {
         console.error('Reconnection failed:', error);
       });
     }, delay);

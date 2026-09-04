@@ -8,6 +8,7 @@ import apiService from '../services/apiService';
 import websocketService from '../services/websocketService';
 import { createMockSocket } from '../services/mockBackend';
 import { DEMO_MODE } from '../config';
+import { useAuthStore } from '../store/authStore';
 
 const STAGES = [
   { key: 'requested', label: 'Finding a driver' },
@@ -66,7 +67,10 @@ const RideTrackingPage = () => {
 
           setTimeout(() => !cancelled && advance('en-route').catch(() => {}), 1500);
         } else {
-          await websocketService.connect(loaded.userId, 'rider');
+          await websocketService.connect({
+            userType: 'rider',
+            getToken: useAuthStore.getState().getIdToken,
+          });
           setConnected(true);
           websocketService.on('location_update', (msg) => setDriverLocation(msg.location));
           websocketService.on('ride_status_update', (msg) =>
