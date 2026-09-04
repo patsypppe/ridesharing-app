@@ -1,14 +1,13 @@
 // backend/services/driver-service/handler.js
-const { createResponse, validateToken, dbGet, dbPut, dbUpdate, dbQuery, publishEvent, schemas } = require('/opt/utils');
+const { createResponse, authenticate, dbGet, dbPut, dbUpdate, dbQuery, publishEvent, schemas } = require('/opt/nodejs/utils');
 const { v4: uuidv4 } = require('uuid');
 
 // Register as driver
 exports.registerDriver = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const userId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
 
     const body = JSON.parse(event.body);
     
@@ -42,8 +41,8 @@ exports.registerDriver = async (event) => {
       rating: 5.0,
       totalRides: 0,
       isVerified: false,
-      location: null,
-      locationHash: null,
+      // location and locationHash are set by updateAvailability. locationHash
+      // is the LocationIndex key; DynamoDB rejects a null where it expects a string.
       createdAt: new Date().toISOString(),
       isActive: true
     };
@@ -81,10 +80,9 @@ exports.registerDriver = async (event) => {
 // Update driver availability/status
 exports.updateAvailability = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const driverId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const driverId = auth.userId;
 
     const body = JSON.parse(event.body);
     const { status, location } = body;
@@ -148,10 +146,9 @@ exports.updateAvailability = async (event) => {
 // Get driver profile
 exports.getDriverProfile = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const driverId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const driverId = auth.userId;
 
     const driver = await dbGet({
       TableName: process.env.DRIVERS_TABLE,
@@ -177,6 +174,21 @@ exports.getDriverProfile = async (event) => {
 };
 
 // Get nearby available drivers (for matching service)
+// The rider-facing view of a driver: enough to choose one on the map, with no
+// licence, identity or verification fields. The plate is shared after matching.
+const toPublicDriver = (driver, distance) => ({
+  driverId: driver.driverId,
+  rating: driver.rating,
+  totalRides: driver.totalRides,
+  distance,
+  location: driver.location,
+  vehicleInfo: {
+    make: driver.vehicleInfo && driver.vehicleInfo.make,
+    model: driver.vehicleInfo && driver.vehicleInfo.model,
+    color: driver.vehicleInfo && driver.vehicleInfo.color
+  }
+});
+
 exports.getNearbyDrivers = async (event) => {
   try {
     const { lat, lng, radius = 5 } = event.queryStringParameters || {};
@@ -227,15 +239,12 @@ exports.getNearbyDrivers = async (event) => {
       }
     }
 
-    // Sort by distance and rating
+    // Sort by distance and rating; expose only the rider-facing fields
     const sortedDrivers = nearbyDrivers
-      .map(driver => ({
-        ...driver,
-        distance: calculateDistance(
-          latitude, longitude,
-          driver.location.lat, driver.location.lng
-        )
-      }))
+      .map(driver => toPublicDriver(
+        driver,
+        calculateDistance(latitude, longitude, driver.location.lat, driver.location.lng)
+      ))
       .sort((a, b) => {
         // Prioritize closer drivers with higher ratings
         const scoreA = (a.rating * 0.3) - (a.distance * 0.7);

@@ -1,14 +1,16 @@
 // backend/services/ride-service/handler.js
-const { createResponse, validateToken, dbGet, dbPut, dbUpdate, dbQuery, publishEvent, schemas } = require('/opt/utils');
+const { createResponse, authenticate, dbGet, dbPut, dbUpdate, dbQuery, publishEvent, schemas } = require('/opt/nodejs/utils');
 const { v4: uuidv4 } = require('uuid');
+
+// Statuses that mean a ride is still in flight (see updateRideStatus for the full set).
+const OPEN_RIDE_STATUSES = ['requested', 'matched', 'en-route', 'arrived', 'in-progress'];
 
 // Request a ride
 exports.requestRide = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const userId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
 
     const body = JSON.parse(event.body);
     
@@ -21,21 +23,22 @@ exports.requestRide = async (event) => {
       });
     }
 
-    // Check if user has an active ride
-    const activeRide = await dbQuery({
+    // Check if user already has an open ride
+    const openRides = await dbQuery({
       TableName: process.env.RIDES_TABLE,
       IndexName: 'UserRidesIndex',
-      KeyConditionExpression: 'userId = :userId AND #status = :status',
+      KeyConditionExpression: 'userId = :userId',
+      FilterExpression: `#status IN (${OPEN_RIDE_STATUSES.map((_, i) => `:status${i}`).join(', ')})`,
       ExpressionAttributeNames: {
         '#status': 'status'
       },
-      ExpressionAttributeValues: {
-        ':userId': userId,
-        ':status': 'active'
-      }
+      ExpressionAttributeValues: OPEN_RIDE_STATUSES.reduce(
+        (values, status, i) => ({ ...values, [`:status${i}`]: status }),
+        { ':userId': userId }
+      )
     });
 
-    if (activeRide.Items && activeRide.Items.length > 0) {
+    if (openRides.Items && openRides.Items.length > 0) {
       return createResponse(409, { 
         error: 'You already have an active ride request' 
       });
@@ -54,8 +57,9 @@ exports.requestRide = async (event) => {
     const ride = {
       rideId,
       userId,
-      driverId: null,
-      status: 'requested', // requested, matched, en-route, in-progress, completed, cancelled
+      // driverId is set by acceptRide. It is the DriverRidesIndex key, and
+      // DynamoDB rejects a null where the index expects a string.
+      status: 'requested', // requested, matched, en-route, arrived, in-progress, completed, cancelled
       rideType: value.rideType,
       pickupLocation: value.pickupLocation,
       dropoffLocation: value.dropoffLocation,
@@ -101,10 +105,9 @@ exports.requestRide = async (event) => {
 // Accept ride (driver endpoint)
 exports.acceptRide = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const driverId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const driverId = auth.userId;
 
     const { rideId } = event.pathParameters;
 
@@ -191,10 +194,9 @@ exports.acceptRide = async (event) => {
 // Update ride status
 exports.updateRideStatus = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const userId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
 
     const { rideId } = event.pathParameters;
     const body = JSON.parse(event.body);
@@ -295,13 +297,42 @@ exports.updateRideStatus = async (event) => {
   }
 };
 
+// Get one ride. Only the rider who requested it or the assigned driver may read it.
+exports.getRide = async (event) => {
+  try {
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
+
+    const { rideId } = event.pathParameters;
+
+    const ride = await dbGet({
+      TableName: process.env.RIDES_TABLE,
+      Key: { rideId }
+    });
+
+    if (!ride) {
+      return createResponse(404, { error: 'Ride not found' });
+    }
+
+    if (ride.userId !== userId && ride.driverId !== userId) {
+      return createResponse(403, { error: 'Unauthorized to view this ride' });
+    }
+
+    return createResponse(200, { ride });
+
+  } catch (error) {
+    console.error('Get ride error:', error);
+    return createResponse(500, { error: 'Internal server error' });
+  }
+};
+
 // Get ride history
 exports.getRideHistory = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const userId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
 
     const { limit = 20, startKey } = event.queryStringParameters || {};
 

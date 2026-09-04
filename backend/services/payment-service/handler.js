@@ -1,11 +1,15 @@
 // backend/services/payment-service/handler.js
-const { createResponse, validateToken, dbGet, dbPut, dbQuery, publishEvent } = require('/opt/utils');
+const { createResponse, authenticate, dbGet, dbPut, dbQuery, dbUpdate, publishEvent } = require('/opt/nodejs/utils');
 const { v4: uuidv4 } = require('uuid');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // Calculate ride fare
 exports.calculateFare = async (event) => {
   try {
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
+
     const { rideId } = event.pathParameters;
     
     // Get ride details
@@ -16,6 +20,11 @@ exports.calculateFare = async (event) => {
 
     if (!ride) {
       return createResponse(404, { error: 'Ride not found' });
+    }
+
+    // Only the rider or the assigned driver may price this ride
+    if (ride.userId !== userId && ride.driverId !== userId) {
+      return createResponse(403, { error: 'Unauthorized to view this ride' });
     }
 
     // Fare calculation logic
@@ -65,10 +74,9 @@ exports.calculateFare = async (event) => {
 // Process payment (Stripe integration)
 exports.processPayment = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const userId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
 
     const body = JSON.parse(event.body);
     const { rideId, paymentMethodId, savePaymentMethod = false } = body;
@@ -222,10 +230,9 @@ exports.processPayment = async (event) => {
 // Get payment history
 exports.getPaymentHistory = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const userId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
 
     const { limit = 20, startKey } = event.queryStringParameters || {};
 

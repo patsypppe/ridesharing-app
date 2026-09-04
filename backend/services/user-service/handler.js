@@ -1,35 +1,40 @@
 // backend/services/user-service/handler.js
-const { createResponse, validateToken, dbGet, dbPut, dbUpdate, schemas } = require('/opt/utils');
-const { v4: uuidv4 } = require('uuid');
+const { createResponse, authenticate, dbGet, dbPut, dbUpdate, schemas } = require('/opt/nodejs/utils');
 
 // User registration handler
+// Creates the DynamoDB profile for an already-signed-up Cognito user. The
+// profile is keyed by the Cognito `sub` because every other service looks
+// users up by the `sub` in their token.
 exports.register = async (event) => {
   try {
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
+
     const body = JSON.parse(event.body);
-    
+
     // Validate input
     const { error, value } = schemas.user.validate(body);
     if (error) {
-      return createResponse(400, { 
-        error: 'Validation failed', 
-        details: error.details[0].message 
+      return createResponse(400, {
+        error: 'Validation failed',
+        details: error.details[0].message
       });
     }
 
-    // Check if user already exists
+    // Check if this Cognito user already has a profile
     const existingUser = await dbGet({
       TableName: process.env.USERS_TABLE,
-      Key: { userId: body.email } // Using email as primary key initially
+      Key: { userId }
     });
 
     if (existingUser) {
-      return createResponse(409, { 
-        error: 'User already exists' 
+      return createResponse(409, {
+        error: 'User already exists'
       });
     }
 
     // Create new user
-    const userId = uuidv4();
     const user = {
       userId,
       email: value.email,
@@ -47,18 +52,15 @@ exports.register = async (event) => {
       Item: user
     });
 
-    // Remove sensitive data from response
-    const { ...userResponse } = user;
-    
-    return createResponse(201, { 
+    return createResponse(201, {
       message: 'User registered successfully',
-      user: userResponse
+      user
     });
 
   } catch (error) {
     console.error('Registration error:', error);
-    return createResponse(500, { 
-      error: 'Internal server error' 
+    return createResponse(500, {
+      error: 'Internal server error'
     });
   }
 };
@@ -66,15 +68,9 @@ exports.register = async (event) => {
 // Get user profile
 exports.getProfile = async (event) => {
   try {
-    // Extract user ID from JWT token
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    if (!authHeader) {
-      return createResponse(401, { error: 'No authorization header' });
-    }
-
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const userId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
 
     // Fetch user profile
     const user = await dbGet({
@@ -97,10 +93,9 @@ exports.getProfile = async (event) => {
 // Update user profile
 exports.updateProfile = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const userId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
 
     const body = JSON.parse(event.body);
     
@@ -153,10 +148,9 @@ exports.updateProfile = async (event) => {
 // Switch user type (rider <-> driver)
 exports.switchUserType = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    const token = authHeader.replace('Bearer ', '');
-    const decodedToken = validateToken(token);
-    const userId = decodedToken.sub;
+    const auth = await authenticate(event);
+    if (!auth.ok) return auth.response;
+    const userId = auth.userId;
 
     const body = JSON.parse(event.body);
     const { userType } = body;

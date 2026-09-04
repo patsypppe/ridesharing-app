@@ -1,22 +1,41 @@
 // backend/services/websocket-service/handler.js
-const { createResponse, dbPut, dbGet, dbQuery, dbUpdate } = require('/opt/utils');
+const { createResponse, validateToken, dbPut, dbGet, dbQuery, dbUpdate, dbScan } = require('/opt/nodejs/utils');
 
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE;
+const USER_TYPES = ['rider', 'driver'];
+
+// Only the rider or the assigned driver may relay messages about a ride.
+const isRideParticipant = (ride, userId) =>
+  Boolean(userId) && [ride.userId, ride.driverId].includes(userId);
 
 // WebSocket connection handler
+// Browsers cannot set headers on the WebSocket handshake, so the client passes
+// its Cognito ID token as ?token=. The user id is taken from the verified
+// claims; a userId in the query string is ignored.
 exports.connect = async (event) => {
   try {
     const connectionId = event.requestContext.connectionId;
-    const { userId, userType } = event.queryStringParameters || {};
+    const { token, userType } = event.queryStringParameters || {};
 
-    if (!userId || !userType) {
-      return createResponse(400, { error: 'Missing required parameters' });
+    if (!token) {
+      return createResponse(401, { error: 'Missing token' });
+    }
+
+    if (!USER_TYPES.includes(userType)) {
+      return createResponse(400, { error: `userType must be one of: ${USER_TYPES.join(', ')}` });
+    }
+
+    let claims;
+    try {
+      claims = await validateToken(token);
+    } catch (error) {
+      return createResponse(401, { error: 'Invalid or expired token' });
     }
 
     // Store connection info
     const connection = {
       connectionId,
-      userId,
+      userId: claims.sub,
       userType, // 'rider' or 'driver'
       connectedAt: new Date().toISOString(),
       lastActivity: new Date().toISOString()
@@ -27,7 +46,7 @@ exports.connect = async (event) => {
       Item: connection
     });
 
-    console.log(`Connection established: ${connectionId} for user ${userId}`);
+    console.log(`Connection established: ${connectionId} for user ${claims.sub}`);
     return createResponse(200, { message: 'Connected successfully' });
 
   } catch (error) {
@@ -66,23 +85,25 @@ exports.message = async (event) => {
     const body = JSON.parse(event.body);
     const { action, data } = body;
 
-    // Update last activity
-    await dbUpdate({
+    // Update last activity and learn who owns this connection
+    const updated = await dbUpdate({
       TableName: CONNECTIONS_TABLE,
       Key: { connectionId },
       UpdateExpression: 'SET lastActivity = :lastActivity',
       ExpressionAttributeValues: {
         ':lastActivity': new Date().toISOString()
-      }
+      },
+      ReturnValues: 'ALL_NEW'
     });
+    const senderId = updated && updated.Attributes ? updated.Attributes.userId : null;
 
     // Handle different message types
     switch (action) {
       case 'location_update':
-        await handleLocationUpdate(connectionId, data);
+        await handleLocationUpdate(senderId, data);
         break;
       case 'ride_status_update':
-        await handleRideStatusUpdate(connectionId, data);
+        await handleRideStatusUpdate(senderId, data);
         break;
       case 'ping':
         await sendMessageToConnection(connectionId, { type: 'pong' });
@@ -99,9 +120,10 @@ exports.message = async (event) => {
   }
 };
 
-// Send location updates to relevant connections
-const handleLocationUpdate = async (connectionId, locationData) => {
-  const { userId, location, rideId } = locationData;
+// Send location updates to relevant connections. `userId` is the verified
+// owner of the sending connection; any userId in the payload is ignored.
+const handleLocationUpdate = async (userId, locationData) => {
+  const { location, rideId } = locationData;
 
   if (!rideId) {
     console.error('No ride ID provided for location update');
@@ -120,8 +142,13 @@ const handleLocationUpdate = async (connectionId, locationData) => {
       return;
     }
 
-    // Send location update to rider and driver
-    const targetUsers = [ride.userId, ride.driverId].filter(id => id !== userId);
+    if (!isRideParticipant(ride, userId)) {
+      console.warn(`Ignoring location_update for ride ${rideId} from non-participant ${userId}`);
+      return;
+    }
+
+    // Send location update to the other party
+    const targetUsers = [ride.userId, ride.driverId].filter(id => id && id !== userId);
 
     for (const targetUserId of targetUsers) {
       const connections = await getUserConnections(targetUserId);
@@ -141,8 +168,9 @@ const handleLocationUpdate = async (connectionId, locationData) => {
   }
 };
 
-// Handle ride status updates
-const handleRideStatusUpdate = async (connectionId, statusData) => {
+// Handle ride status updates. `userId` is the verified owner of the sending
+// connection; only the rider or the assigned driver may push a status.
+const handleRideStatusUpdate = async (userId, statusData) => {
   const { rideId, status, message } = statusData;
 
   try {
@@ -157,8 +185,13 @@ const handleRideStatusUpdate = async (connectionId, statusData) => {
       return;
     }
 
+    if (!isRideParticipant(ride, userId)) {
+      console.warn(`Ignoring ride_status_update for ride ${rideId} from non-participant ${userId}`);
+      return;
+    }
+
     // Send status update to both rider and driver
-    const targetUsers = [ride.userId, ride.driverId];
+    const targetUsers = [ride.userId, ride.driverId].filter(Boolean);
 
     for (const targetUserId of targetUsers) {
       const connections = await getUserConnections(targetUserId);
@@ -232,14 +265,13 @@ exports.broadcast = async (event) => {
   try {
     const { message, userType, excludeUserId } = JSON.parse(event.body);
 
-    // Get all active connections
-    const result = await dbQuery({
+    // Get all active connections (small table; a Query needs a key condition)
+    const result = await dbScan({
       TableName: CONNECTIONS_TABLE,
-      FilterExpression: 'attribute_not_exists(disconnectedAt)',
-      ...(userType && {
-        FilterExpression: 'attribute_not_exists(disconnectedAt) AND userType = :userType',
-        ExpressionAttributeValues: { ':userType': userType }
-      })
+      FilterExpression: userType
+        ? 'attribute_not_exists(disconnectedAt) AND userType = :userType'
+        : 'attribute_not_exists(disconnectedAt)',
+      ...(userType && { ExpressionAttributeValues: { ':userType': userType } })
     });
 
     const connections = (result.Items || []).filter(conn => 

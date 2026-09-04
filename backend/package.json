@@ -1,0 +1,31 @@
+{
+  "name": "rideshare-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test harness for the rideshare Lambda services. Runtime dependencies live in each service and in shared/layers/common.",
+  "scripts": {
+    "test": "jest",
+    "test:integration": "jest --testPathIgnorePatterns /node_modules/ --testMatch '**/tests/integration/**/*.test.js'"
+  },
+  "devDependencies": {
+    "aws-sdk": "^2.1692.0",
+    "jest": "^30.0.0",
+    "joi": "^17.13.3",
+    "jsonwebtoken": "^9.0.2",
+    "jwks-rsa": "^3.1.0",
+    "uuid": "^11.1.1"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/tests/integration/"
+    ],
+    "moduleNameMapper": {
+      "^/opt/nodejs/utils$": "<rootDir>/shared/layers/common/utils.js"
+    }
+  }
+}

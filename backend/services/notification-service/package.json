@@ -1,0 +1,7 @@
+{
+  "name": "notification-service",
+  "version": "1.0.0",
+  "description": "notification microservice (AWS Lambda). aws-sdk v2 is provided by the shared layer.",
+  "main": "handler.js",
+  "dependencies": {}
+}

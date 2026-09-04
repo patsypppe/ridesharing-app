@@ -1,5 +1,5 @@
 // backend/services/notification-service/handler.js
-const { createResponse, validateToken, dbPut, dbGet, sns, publishEvent } = require('/opt/utils');
+const { createResponse, dbPut, dbGet, sns, publishEvent } = require('/opt/nodejs/utils');
 const AWS = require('aws-sdk');
 const ses = new AWS.SES({ region: process.env.AWS_REGION });
 
@@ -266,8 +266,14 @@ const handleDriverRegisteredNotification = async (eventDetail) => {
   }
 };
 
-// Send email using SES
+// Send email using SES. Without a verified sender there is nothing to send
+// from, so skip the email and let the SMS and audit log that follow still run.
 const sendEmail = async ({ to, subject, template, data }) => {
+  if (!process.env.FROM_EMAIL) {
+    console.warn(`FROM_EMAIL is not set; skipping "${subject}" email to ${to}`);
+    return null;
+  }
+
   try {
     const htmlBody = generateEmailTemplate(template, data);
     const textBody = generateTextTemplate(template, data);

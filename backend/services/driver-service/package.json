@@ -1,0 +1,9 @@
+{
+  "name": "driver-service",
+  "version": "1.0.0",
+  "description": "driver microservice (AWS Lambda)",
+  "main": "handler.js",
+  "dependencies": {
+    "uuid": "^11.1.1"
+  }
+}

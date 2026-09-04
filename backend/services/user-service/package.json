@@ -1,13 +1,7 @@
 {
   "name": "user-service",
   "version": "1.0.0",
-  "description": "User management microservice",
+  "description": "User management microservice (AWS Lambda)",
   "main": "handler.js",
-  "dependencies": {
-    "uuid": "^9.0.0"
-  },
-  "scripts": {
-    "test": "jest",
-    "deploy": "serverless deploy"
-  }
+  "dependencies": {}
 }
