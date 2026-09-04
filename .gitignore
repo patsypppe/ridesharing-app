@@ -23,7 +23,6 @@ dist/
 *.tfstate
 *.tfstate.*
 .terraform/
-.terraform.lock.hcl
 
 # SAM
 .aws-sam/
@@ -56,3 +55,6 @@ __pycache__/
 *.py[cod]
 venv/
 .venv/
+
+# Lambda packages staged by backend/scripts/package.sh
+backend/build/
