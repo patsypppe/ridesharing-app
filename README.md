@@ -45,7 +45,7 @@ flowchart TB
     PAY --> LAYER
     SOCK --> LAYER
 
-    LAYER --> DDB[("DynamoDB<br/>users · drivers · rides")]
+    LAYER --> DDB[("DynamoDB<br/>users · drivers · rides<br/>payments · notifications · connections")]
     USER --> COG["Cognito user pool"]
     PAY --> STRIPE["Stripe (test mode)"]
     RIDE --> EB["EventBridge bus"]
@@ -60,12 +60,12 @@ it connects to everything.
 
 | Service | Lines | Responsibility |
 |---|---:|---|
-| `user-service` | 188 | Registration, profile, token validation |
-| `driver-service` | 292 | Driver registration and availability |
-| `ride-service` | 358 | Ride matching and status transitions |
-| `payment-service` | 367 | Fare calculation and Stripe charges (test mode) |
-| `notification-service` | 425 | Event-driven email and SMS via SNS |
-| `websocket-service` | 264 | Connection lifecycle and live location broadcast |
+| `user-service` | 182 | Registration, profile, token validation |
+| `driver-service` | 301 | Driver registration and availability |
+| `ride-service` | 389 | Ride matching and status transitions |
+| `payment-service` | 374 | Fare calculation and Stripe charges (test mode) |
+| `notification-service` | 431 | Event-driven email and SMS via SNS |
+| `websocket-service` | 296 | Connection lifecycle and live location broadcast |
 
 All six share `backend/shared/layers/common/utils.js`, which provides the response envelope, JWT
 validation, and a DynamoDB DocumentClient configured with three retries and a 5 second timeout, plus SNS
@@ -117,11 +117,11 @@ SNS, CloudWatch Logs, Stripe (test mode), Joi, jsonwebtoken
 
 ```
 backend/
-  services/<name>-service/handler.js   six Lambda handlers
-  services/user-service/tests/         Jest unit + integration tests
-  shared/layers/common/                shared Lambda layer
-  shared/middleware/authMiddleware.js
-  infrastructure/terraform/            main.tf, variables.tf, outputs.tf
+  services/<name>-service/handler.js   six Lambda handlers (22 exported functions)
+  services/<name>-service/tests/       Jest unit tests per service
+  shared/layers/common/                shared Lambda layer (+ tests)
+  scripts/package.sh                   stages layer + services for Terraform
+  infrastructure/terraform/            main.tf (platform), lambda.tf, api_routes.tf, events.tf
   infrastructure/monitoring/           CloudWatch dashboard definition
   infrastructure/scripts/cost-monitor.py
 frontend/web-app/                      React client
@@ -166,11 +166,9 @@ Copy `.env.example` and fill it in. Nothing secret belongs in the repository.
 
 | Variable | Used by | Notes |
 |---|---|---|
-| `USERS_TABLE`, `DRIVERS_TABLE`, `RIDES_TABLE` | all services | DynamoDB table names |
-| `JWT_SECRET` | shared layer | token validation |
-| `STRIPE_SECRET_KEY` | payment-service | Stripe **test** key |
-| `SNS_TOPIC_ARN` | notification-service | |
-| `EVENT_BUS_NAME` | ride-service | |
+| `*_TABLE`, `EVENT_BUS_NAME`, `USER_POOL_ID`, `USER_POOL_CLIENT_ID`, `WEBSOCKET_API_ENDPOINT` | all services | Set by Terraform on every function; nothing to fill in |
+| `stripe_secret_key`, `stripe_webhook_secret` | payment-service | Terraform variables (`TF_VAR_*`), Stripe **test** keys |
+| `from_email` | notification-service | Terraform variable; must be an SES-verified sender |
 | `REACT_APP_AWS_REGION` | frontend | |
 | `REACT_APP_USER_POOL_ID`, `REACT_APP_USER_POOL_CLIENT_ID` | frontend | Cognito |
 | `REACT_APP_API_GATEWAY_URL`, `REACT_APP_WEBSOCKET_URL` | frontend | |
@@ -183,20 +181,18 @@ CI additionally expects the repository secret `AWS_ROLE_ARN`, an IAM role truste
 
 These are real gaps, listed so nobody has to discover them by cloning.
 
-- **Terraform does not declare the compute layer.** The stack provisions S3, CloudFront, three DynamoDB
-  tables, Cognito, both API Gateway v2 APIs, an EventBridge bus, an SNS topic, and a CloudWatch log
-  group. It declares **no `aws_lambda_function`, no API routes or integrations, and no IAM roles**, so
-  the two APIs have no routes attached and the handlers are never deployed.
-- **`outputs.tf` is empty.** The CI workflow reads `api_gateway_url`, `user_pool_id`, and
-  `user_pool_client_id` from it, and gets nothing.
-- **`backend/package.json` is missing**, so `npm ci` and `npm test` fail from a clean clone even though
-  the Jest tests exist.
-- **The CI matrix is wrong.** It deploys a `location-service` that has no code and omits
-  `websocket-service`, which does.
-- **The frontend does not build.** `src/index.js` and `public/index.html` are absent, and `App.js`
-  imports seven components that do not exist. Only `RideBookingPage` is implemented.
-- **The system has never been deployed.** There is no live URL, no Terraform state, and no CI run to
-  point at. Any performance, uptime, or monthly-cost figure would be invented, so none is quoted here.
+- **The system has never been deployed.** Terraform validates and plans cleanly (132 resources), but
+  there is no live URL, no remote state, and no CI run to point at. Any performance, uptime, or
+  monthly-cost figure would be invented, so none is quoted here.
+- **CI does not match the Terraform yet.** `backend-deploy.yml` still tries to update functions by a
+  naming scheme that no longer exists and publishes the Lambda layer separately from Terraform. The
+  fixes are listed in `docs/DEPLOY.md` §5.
+- **The frontend never sends its token.** The Amplify `API` config needs a `custom_header` returning
+  `Authorization: Bearer <idToken>`; until then every authenticated route returns 401.
+- **No profile is created after sign-up.** `POST /user/register` needs a Bearer token and nothing calls
+  it yet; a post-confirmation trigger or a call after first sign-in is still to do.
+- **aws-sdk v2 is end-of-life.** It ships in the shared layer (most of its 17 MB) and fails
+  `npm audit` at the moderate level. Migrating to SDK v3 is the fix.
 
 ---
 
@@ -204,11 +200,10 @@ These are real gaps, listed so nobody has to discover them by cloning.
 
 In dependency order, since each unblocks the next:
 
-1. Add `backend/package.json` so the existing tests can run.
-2. Populate `outputs.tf`.
-3. Add the Lambda functions, API routes and integrations, and IAM roles to Terraform.
-4. Fix the CI service matrix.
-5. Restore the frontend entry point and the missing pages.
+1. Fix the CI workflow to run `backend/scripts/package.sh` and let Terraform own the function code.
+2. Send the Cognito ID token from the frontend and create the user profile after sign-up.
+3. Deploy, then wire the frontend build into CI (S3 sync + CloudFront invalidation).
+4. Migrate the shared layer from aws-sdk v2 to v3.
 
 ---
 
