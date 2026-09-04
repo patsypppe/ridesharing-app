@@ -1,15 +1,17 @@
 // frontend/web-app/src/store/authStore.js
 import { create } from 'zustand';
-import { Auth } from 'aws-amplify';
+import auth from '../services/authProvider';
 
-export const useAuthStore = create((set, get) => ({
+export const useAuthStore = create((set) => ({
   user: null,
   isLoading: true,
   error: null,
 
+  clearError: () => set({ error: null }),
+
   checkAuthState: async () => {
     try {
-      const user = await Auth.currentAuthenticatedUser();
+      const user = await auth.currentAuthenticatedUser();
       set({ user, isLoading: false });
     } catch (error) {
       set({ user: null, isLoading: false });
@@ -19,7 +21,7 @@ export const useAuthStore = create((set, get) => ({
   signIn: async (email, password) => {
     try {
       set({ isLoading: true, error: null });
-      const user = await Auth.signIn(email, password);
+      const user = await auth.signIn(email, password);
       set({ user, isLoading: false });
       return user;
     } catch (error) {
@@ -31,13 +33,10 @@ export const useAuthStore = create((set, get) => ({
   signUp: async (email, password, attributes) => {
     try {
       set({ isLoading: true, error: null });
-      const result = await Auth.signUp({
+      const result = await auth.signUp({
         username: email,
         password,
-        attributes: {
-          email,
-          ...attributes
-        }
+        attributes: { email, ...attributes },
       });
       set({ isLoading: false });
       return result;
@@ -50,7 +49,7 @@ export const useAuthStore = create((set, get) => ({
   confirmSignUp: async (email, confirmationCode) => {
     try {
       set({ isLoading: true, error: null });
-      await Auth.confirmSignUp(email, confirmationCode);
+      await auth.confirmSignUp(email, confirmationCode);
       set({ isLoading: false });
     } catch (error) {
       set({ error: error.message, isLoading: false });
@@ -61,7 +60,7 @@ export const useAuthStore = create((set, get) => ({
   signOut: async () => {
     try {
       set({ isLoading: true });
-      await Auth.signOut();
+      await auth.signOut();
       set({ user: null, isLoading: false });
     } catch (error) {
       set({ error: error.message, isLoading: false });
@@ -71,11 +70,11 @@ export const useAuthStore = create((set, get) => ({
 
   getIdToken: async () => {
     try {
-      const session = await Auth.currentSession();
+      const session = await auth.currentSession();
       return session.getIdToken().getJwtToken();
     } catch (error) {
       console.error('Error getting token:', error);
       return null;
     }
-  }
+  },
 }));

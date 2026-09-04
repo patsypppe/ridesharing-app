@@ -3,11 +3,13 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLocationStore } from '../store/locationStore';
 import RideshareMap from '../components/Map';
+import NavBar from '../components/NavBar';
 import apiService from '../services/apiService';
 
 const RideBookingPage = () => {
   const navigate = useNavigate();
-  const { currentLocation, getCurrentLocation, isLocationLoading } = useLocationStore();
+  const { currentLocation, getCurrentLocation, isLocationLoading, hasRequestedLocation, locationError } =
+    useLocationStore();
   
   const [pickupLocation, setPickupLocation] = useState(null);
   const [dropoffLocation, setDropoffLocation] = useState(null);
@@ -18,10 +20,10 @@ const RideBookingPage = () => {
   const [bookingStep, setBookingStep] = useState('pickup'); // pickup, dropoff, confirm, booking
 
   useEffect(() => {
-    if (!currentLocation && !isLocationLoading) {
+    if (!currentLocation && !isLocationLoading && !hasRequestedLocation) {
       getCurrentLocation();
     }
-  }, [currentLocation, isLocationLoading, getCurrentLocation]);
+  }, [currentLocation, isLocationLoading, hasRequestedLocation, getCurrentLocation]);
 
   useEffect(() => {
     if (currentLocation && !pickupLocation) {
@@ -38,6 +40,7 @@ const RideBookingPage = () => {
       calculateEstimatedFare();
       loadNearbyDrivers();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickupLocation, dropoffLocation, rideType]);
 
   const calculateEstimatedFare = () => {
@@ -126,7 +129,9 @@ const RideBookingPage = () => {
   };
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <>
+      <NavBar />
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* Header */}
       <div style={{ 
         padding: '16px', 
@@ -137,10 +142,16 @@ const RideBookingPage = () => {
         <div style={{ fontSize: '14px', color: '#6c757d' }}>
           Step {bookingStep === 'pickup' ? '1' : bookingStep === 'dropoff' ? '2' : '3'} of 3
         </div>
+        {locationError && (
+          <div style={{ fontSize: '13px', color: '#b45309', marginTop: '6px' }}>
+            Location unavailable ({locationError}) — showing a default area. Tap the map to place your
+            points.
+          </div>
+        )}
       </div>
 
       {/* Map */}
-      <div style={{ flex: 1 }}>
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <RideshareMap
           center={currentLocation}
           pickupLocation={pickupLocation}
@@ -155,6 +166,7 @@ const RideBookingPage = () => {
           }))}
           showRoute={bookingStep === 'confirm'}
           onMapClick={handleMapClick}
+          className="map-container map-fill"
           height="100%"
         />
       </div>
@@ -283,15 +295,15 @@ const RideBookingPage = () => {
               </button>
               <button 
                 onClick={handleConfirmRide}
-                disabled={isBooking || !nearbyDrivers.length}
+                disabled={isBooking}
                 style={{
                   flex: 2,
                   padding: '12px',
-                  backgroundColor: isBooking || !nearbyDrivers.length ? '#ccc' : '#28a745',
+                  backgroundColor: isBooking ? '#ccc' : '#28a745',
                   color: 'white',
                   border: 'none',
                   borderRadius: '6px',
-                  cursor: isBooking || !nearbyDrivers.length ? 'not-allowed' : 'pointer'
+                  cursor: isBooking ? 'not-allowed' : 'pointer'
                 }}
               >
                 {isBooking ? 'Booking...' : 'Book Ride'}
@@ -299,8 +311,9 @@ const RideBookingPage = () => {
             </div>
           </div>
         )}
+        </div>
       </div>
-    </div>
+    </>
   );
 };
 
